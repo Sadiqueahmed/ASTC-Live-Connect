@@ -1,0 +1,147 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/cli/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Bus Routes in Guwahati
+model BusRoute {
+  id          String     @id @default(cuid())
+  routeNumber String     @unique // e.g., "1A", "2B", "3C"
+  routeName   String     // e.g., "Adabari to Paltan Bazaar"
+  startPoint  String
+  endPoint    String
+  distance    Float      // in kilometers
+  baseFare    Float      // base fare in INR
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  
+  stops       BusStop[]
+  buses       Bus[]
+}
+
+// Bus Stops along routes
+model BusStop {
+  id          String     @id @default(cuid())
+  name        String     // e.g., "Adabari Bus Stand", "Maligaon Flyover"
+  landmark    String?    // Nearby landmark
+  latitude    Float
+  longitude   Float
+  sequence    Int        // Order in route
+  isMajor     Boolean    @default(false) // Major stop for transfers
+  routeId     String
+  route       BusRoute   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  
+  @@unique([routeId, sequence])
+}
+
+// Individual Buses
+model Bus {
+  id            String          @id @default(cuid())
+  busNumber     String          @unique // e.g., "AS-1234"
+  busType       BusType         @default(STANDARD) // Standard, AC, Electric
+  capacity      Int             @default(50)
+  routeId       String?
+  route         BusRoute?       @relation(fields: [routeId], references: [id])
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  
+  locations     LiveBusLocation[]
+  reports       CommunityReport[]
+}
+
+// Real-time bus location tracking
+model LiveBusLocation {
+  id              String    @id @default(cuid())
+  busId           String
+  bus             Bus       @relation(fields: [busId], references: [id], onDelete: Cascade)
+  latitude        Float
+  longitude       Float
+  speed           Float     // km/h
+  heading         Float     // direction in degrees
+  nextStopId      String?
+  stopsAway       Int       @default(0)
+  currentStatus   BusStatus @default(IN_TRANSIT)
+  lastUpdated     DateTime  @default(now())
+  
+  @@index([busId])
+}
+
+// Traffic congestion zones
+model TrafficZone {
+  id            String          @id @default(cuid())
+  name          String          // e.g., "Maligaon Flyover Construction Zone"
+  description   String?
+  latitude      Float
+  longitude     Float
+  radiusMeters  Int             @default(500)
+  severity      TrafficSeverity @default(MODERATE)
+  isActive      Boolean         @default(true)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  
+  reports       CommunityReport[]
+}
+
+// Community Observer Reports
+model CommunityReport {
+  id            String          @id @default(cuid())
+  busId         String?
+  bus           Bus?            @relation(fields: [busId], references: [id])
+  reportType    ReportType
+  title         String
+  description   String
+  latitude      Float
+  longitude     Float
+  trafficZoneId String?
+  trafficZone   TrafficZone?   @relation(fields: [trafficZoneId], references: [id])
+  delayMinutes  Int             @default(0)
+  isVerified    Boolean         @default(false)
+  helpfulCount  Int             @default(0)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  
+  @@index([createdAt])
+  @@index([reportType])
+}
+
+enum BusType {
+  STANDARD
+  AC
+  ELECTRIC
+  MINI
+}
+
+enum BusStatus {
+  AT_STOP
+  IN_TRANSIT
+  DELAYED
+  OUT_OF_SERVICE
+}
+
+enum TrafficSeverity {
+  LOW
+  MODERATE
+  HIGH
+  SEVERE
+}
+
+enum ReportType {
+  DELAY
+  BREAKDOWN
+  ACCIDENT
+  TRAFFIC_JAM
+  ROAD_BLOCK
+  WEATHER
+  OTHER
+}
