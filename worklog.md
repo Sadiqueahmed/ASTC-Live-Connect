@@ -180,3 +180,28 @@ Stage Summary:
 - shadcn/ui components
 - Socket.io for WebSocket
 - Tailwind CSS for styling
+
+---
+Task ID: 8
+Agent: Main
+Task: Implement WebSocket real-time updates, Favorites system, and Nearest stop detection
+
+Work Log:
+- Created useSocket hook for WebSocket connection to mini-service on port 3003
+- Updated useGeolocation hook for browser geolocation with accuracy info
+- Created useFavoritesStore with Zustand for persistent favorites storage
+- Created FavoritesPanel component for saved routes and stops
+- Created NearestStopsPanel component with distance calculation
+- Updated RouteSelector with heart icons for favoriting routes
+- Added "Favorites" category filter in route list
+- Enhanced main page to merge real-time bus positions from WebSocket
+- Added connection status indicator (LIVE/Offline) in header
+- Updated right panel with 4 tabs: ETA, Nearby, Favorites, Community
+
+Stage Summary:
+- Real-time WebSocket updates every 5 seconds
+- Persistent favorites using localStorage via Zustand
+- Geolocation-based nearest stop detection
+- Haversine formula for distance calculation
+- 4-tab interface for right panel
+- Favorites tab in route categories

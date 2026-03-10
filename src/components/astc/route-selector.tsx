@@ -6,8 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Bus, MapPin, Search, Navigation, Plane, Building, Clock, X } from 'lucide-react';
+import { Bus, MapPin, Search, Navigation, Plane, Building, Clock, X, Heart, Star } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useFavoritesStore } from '@/stores/favorites-store';
 
 interface RouteSelectorProps {
   routes: BusRoute[];
@@ -18,6 +19,7 @@ interface RouteSelectorProps {
 // Route categories
 const categories = [
   { id: 'all', label: 'All', icon: Bus },
+  { id: 'favorites', label: 'Favorites', icon: Heart },
   { id: 'city', label: 'City', icon: Building },
   { id: 'airport', label: 'Airport', icon: Plane },
   { id: 'suburban', label: 'Suburban', icon: Navigation },
@@ -27,13 +29,17 @@ const categories = [
 export function RouteSelector({ routes, selectedRoute, onRouteSelect }: RouteSelectorProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
+  const { favoriteRoutes, addFavoriteRoute, removeFavoriteRoute, isFavoriteRoute } = useFavoritesStore();
 
   // Filter routes based on search and category
   const filteredRoutes = useMemo(() => {
     let filtered = routes;
 
     // Filter by category
-    if (activeCategory === 'airport') {
+    if (activeCategory === 'favorites') {
+      const favoriteIds = new Set(favoriteRoutes.map(f => f.id));
+      filtered = filtered.filter(r => favoriteIds.has(r.id));
+    } else if (activeCategory === 'airport') {
       filtered = filtered.filter(r => 
         r.routeName.toLowerCase().includes('airport') || 
         r.endPoint.toLowerCase().includes('airport')
@@ -71,7 +77,7 @@ export function RouteSelector({ routes, selectedRoute, onRouteSelect }: RouteSel
     }
 
     return filtered;
-  }, [routes, searchQuery, activeCategory]);
+  }, [routes, searchQuery, activeCategory, favoriteRoutes]);
 
   return (
     <Card className="h-full flex flex-col">
@@ -135,29 +141,34 @@ export function RouteSelector({ routes, selectedRoute, onRouteSelect }: RouteSel
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {filteredRoutes.map((route) => (
-                <button
-                  key={route.id}
-                  onClick={() => onRouteSelect(route)}
-                  className={cn(
-                    "w-full text-left px-4 py-2.5 transition-all duration-200",
-                    "hover:bg-emerald-50 focus:outline-none focus:bg-emerald-50",
-                    selectedRoute?.id === route.id && "bg-emerald-100 border-l-4 border-l-emerald-600"
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <Badge
-                          variant="secondary"
-                          className="bg-emerald-100 text-emerald-700 font-bold shrink-0 text-xs"
-                        >
-                          {route.routeNumber}
-                        </Badge>
-                        <span className="font-medium text-gray-900 truncate text-sm">
-                          {route.routeName}
-                        </span>
-                      </div>
+              {filteredRoutes.map((route) => {
+                const isFavorite = isFavoriteRoute(route.id);
+                return (
+                  <div
+                    key={route.id}
+                    onClick={() => onRouteSelect(route)}
+                    className={cn(
+                      "w-full text-left px-4 py-2.5 transition-all duration-200 cursor-pointer",
+                      "hover:bg-emerald-50 focus:outline-none focus:bg-emerald-50",
+                      selectedRoute?.id === route.id && "bg-emerald-100 border-l-4 border-l-emerald-600"
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <Badge
+                            variant="secondary"
+                            className="bg-emerald-100 text-emerald-700 font-bold shrink-0 text-xs"
+                          >
+                            {route.routeNumber}
+                          </Badge>
+                          <span className="font-medium text-gray-900 truncate text-sm">
+                            {route.routeName}
+                          </span>
+                          {isFavorite && (
+                            <Heart className="w-3.5 h-3.5 text-pink-500 fill-current shrink-0" />
+                          )}
+                        </div>
                       <div className="flex items-center gap-2 text-xs text-gray-500">
                         <span className="flex items-center gap-0.5 truncate">
                           <MapPin className="w-2.5 h-2.5 shrink-0" />
@@ -167,7 +178,29 @@ export function RouteSelector({ routes, selectedRoute, onRouteSelect }: RouteSel
                         <span className="truncate">{route.endPoint}</span>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isFavorite) {
+                            removeFavoriteRoute(route.id);
+                          } else {
+                            addFavoriteRoute({
+                              id: route.id,
+                              routeNumber: route.routeNumber,
+                              routeName: route.routeName,
+                            });
+                          }
+                        }}
+                        className={cn(
+                          "p-1.5 rounded-full transition-colors",
+                          isFavorite 
+                            ? "text-pink-500 hover:bg-pink-50" 
+                            : "text-gray-300 hover:text-pink-400 hover:bg-pink-50"
+                        )}
+                      >
+                        <Heart className={cn("w-4 h-4", isFavorite && "fill-current")} />
+                      </button>
                       <div className="flex items-center gap-1 text-xs text-gray-500">
                         <Bus className="w-3 h-3" />
                         <span>{route.buses?.length || 0}</span>
@@ -199,8 +232,9 @@ export function RouteSelector({ routes, selectedRoute, onRouteSelect }: RouteSel
                       </span>
                     )}
                   </div>
-                </button>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

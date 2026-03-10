@@ -1,18 +1,20 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { BusRoute, Bus, TrafficZone, CommunityReport } from '@/components/astc/types';
+import { BusRoute, Bus, TrafficZone, CommunityReport, LiveBusLocation } from '@/components/astc/types';
 import { RouteSelector } from '@/components/astc/route-selector';
 import { StopETAPanel } from '@/components/astc/stop-eta-panel';
 import { CommunityObserver } from '@/components/astc/community-observer';
 import { TrafficZonesPanel } from '@/components/astc/traffic-zones-panel';
+import { FavoritesPanel } from '@/components/astc/favorites-panel';
+import { NearestStopsPanel } from '@/components/astc/nearest-stops-panel';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
-  Bus, 
+  Bus as BusIcon, 
   MapPin, 
   Wifi, 
   Clock, 
@@ -21,9 +23,14 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
-  Route
+  Route,
+  Heart,
+  Navigation,
+  WifiOff,
+  Crosshair
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useSocket, convertToLiveLocation } from '@/hooks/use-socket';
 
 // Dynamically import BusMap with SSR disabled (Leaflet requires window)
 const BusMap = dynamic(
@@ -52,6 +59,48 @@ export default function Home() {
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(true);
+  const [rightPanelTab, setRightPanelTab] = useState('eta');
+
+  // WebSocket connection for real-time updates
+  const { 
+    isConnected: isSocketConnected, 
+    busPositions, 
+    trafficAlerts,
+    subscribeToRoute,
+    unsubscribeFromRoute,
+    lastUpdate: socketLastUpdate 
+  } = useSocket();
+
+  // Merge real-time bus positions with base bus data
+  const liveBuses = useMemo(() => {
+    if (!isSocketConnected || busPositions.length === 0) {
+      return buses;
+    }
+
+    const positionMap = new Map(busPositions.map(p => [p.busId, p]));
+
+    return buses.map(bus => {
+      const position = positionMap.get(bus.id);
+      if (position) {
+        return {
+          ...bus,
+          isActive: true,
+          liveLocation: convertToLiveLocation(position),
+        };
+      }
+      return bus;
+    });
+  }, [buses, busPositions, isSocketConnected]);
+
+  // Subscribe to route updates when selected route changes
+  useEffect(() => {
+    if (selectedRoute && isSocketConnected) {
+      subscribeToRoute(selectedRoute.id);
+      return () => {
+        unsubscribeFromRoute(selectedRoute.id);
+      };
+    }
+  }, [selectedRoute, isSocketConnected, subscribeToRoute, unsubscribeFromRoute]);
 
   // Fetch all data
   const fetchData = useCallback(async () => {
@@ -84,8 +133,8 @@ export default function Home() {
   // Initial fetch
   useEffect(() => {
     fetchData();
-    // Refresh data every 30 seconds
-    const interval = setInterval(fetchData, 30000);
+    // Refresh static data every 2 minutes (real-time comes from WebSocket)
+    const interval = setInterval(fetchData, 120000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -121,7 +170,7 @@ export default function Home() {
 
   // Calculate stats
   const stats = {
-    activeBuses: buses.filter(b => b.isActive).length,
+    activeBuses: liveBuses.filter(b => b.isActive).length,
     activeRoutes: routes.filter(r => r.isActive).length,
     severeZones: trafficZones.filter(z => z.severity === 'SEVERE' || z.severity === 'HIGH').length,
     recentReports: reports.length,
@@ -146,7 +195,7 @@ export default function Home() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-                <Bus className="w-6 h-6" />
+                <BusIcon className="w-6 h-6" />
               </div>
               <div>
                 <h1 className="text-xl font-bold">ASTC Live Connect</h1>
@@ -158,7 +207,7 @@ export default function Home() {
               {/* Stats badges */}
               <div className="hidden md:flex items-center gap-3">
                 <Badge className="bg-white/20 hover:bg-white/30 text-white border-0 gap-1">
-                  <Bus className="w-3 h-3" />
+                  <BusIcon className="w-3 h-3" />
                   {stats.activeBuses} Buses
                 </Badge>
                 <Badge className="bg-white/20 hover:bg-white/30 text-white border-0 gap-1">
@@ -173,7 +222,7 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Live indicator */}
+              {/* Connection status */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleRefresh}
@@ -182,9 +231,21 @@ export default function Home() {
                 >
                   <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
                 </button>
-                <div className="flex items-center gap-1.5 bg-white/10 px-3 py-1.5 rounded-full">
-                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  <span className="text-xs font-medium">LIVE</span>
+                <div className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-full",
+                  isSocketConnected ? "bg-white/10" : "bg-red-500/30"
+                )}>
+                  {isSocketConnected ? (
+                    <>
+                      <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                      <span className="text-xs font-medium">LIVE</span>
+                    </>
+                  ) : (
+                    <>
+                      <WifiOff className="w-3 h-3" />
+                      <span className="text-xs font-medium">Offline</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -246,7 +307,7 @@ export default function Home() {
               <CardContent className="p-0 h-full">
                 <BusMap
                   route={selectedRoute}
-                  buses={buses}
+                  buses={liveBuses}
                   trafficZones={trafficZones}
                   selectedStop={selectedStop}
                   onStopSelect={setSelectedStop}
@@ -255,23 +316,47 @@ export default function Home() {
             </Card>
           </div>
 
-          {/* Right panel - ETA and Community */}
+          {/* Right panel - ETA, Favorites, Nearest Stops, Community */}
           <div className="w-80 flex-shrink-0 hidden lg:flex flex-col gap-4">
-            <Tabs defaultValue="eta" className="flex-1 flex flex-col">
-              <TabsList className="grid grid-cols-2 w-full">
-                <TabsTrigger value="eta" className="text-xs">
-                  <Clock className="w-3 h-3 mr-1" />
-                  ETA
+            <Tabs value={rightPanelTab} onValueChange={setRightPanelTab} className="flex-1 flex flex-col">
+              <TabsList className="grid grid-cols-4 w-full">
+                <TabsTrigger value="eta" className="text-xs px-2">
+                  <Clock className="w-3 h-3" />
                 </TabsTrigger>
-                <TabsTrigger value="community" className="text-xs">
-                  <Users className="w-3 h-3 mr-1" />
-                  Observer
+                <TabsTrigger value="nearest" className="text-xs px-2">
+                  <Crosshair className="w-3 h-3" />
+                </TabsTrigger>
+                <TabsTrigger value="favorites" className="text-xs px-2">
+                  <Heart className="w-3 h-3" />
+                </TabsTrigger>
+                <TabsTrigger value="community" className="text-xs px-2">
+                  <Users className="w-3 h-3" />
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="eta" className="flex-1 mt-2">
                 <StopETAPanel
                   route={selectedRoute}
                   selectedStopId={selectedStop}
+                />
+              </TabsContent>
+              <TabsContent value="nearest" className="flex-1 mt-2">
+                <NearestStopsPanel
+                  routes={routes}
+                  onRouteSelect={(route) => {
+                    setSelectedRoute(route);
+                    setSelectedStop(null);
+                  }}
+                  onStopSelect={setSelectedStop}
+                />
+              </TabsContent>
+              <TabsContent value="favorites" className="flex-1 mt-2">
+                <FavoritesPanel
+                  routes={routes}
+                  onRouteSelect={(route) => {
+                    setSelectedRoute(route);
+                    setSelectedStop(null);
+                  }}
+                  onStopSelect={setSelectedStop}
                 />
               </TabsContent>
               <TabsContent value="community" className="flex-1 mt-2">
@@ -302,11 +387,35 @@ export default function Home() {
               <Route className="w-5 h-5" />
               <span className="text-xs">Routes</span>
             </Button>
-            <Button variant="ghost" className="flex flex-col items-center gap-1 h-auto py-2">
+            <Button 
+              variant="ghost" 
+              className="flex flex-col items-center gap-1 h-auto py-2"
+              onClick={() => setRightPanelTab('nearest')}
+            >
+              <Crosshair className="w-5 h-5" />
+              <span className="text-xs">Nearby</span>
+            </Button>
+            <Button 
+              variant="ghost" 
+              className="flex flex-col items-center gap-1 h-auto py-2"
+              onClick={() => setRightPanelTab('eta')}
+            >
               <Clock className="w-5 h-5" />
               <span className="text-xs">ETA</span>
             </Button>
-            <Button variant="ghost" className="flex flex-col items-center gap-1 h-auto py-2">
+            <Button 
+              variant="ghost" 
+              className="flex flex-col items-center gap-1 h-auto py-2"
+              onClick={() => setRightPanelTab('favorites')}
+            >
+              <Heart className="w-5 h-5" />
+              <span className="text-xs">Saved</span>
+            </Button>
+            <Button 
+              variant="ghost" 
+              className="flex flex-col items-center gap-1 h-auto py-2"
+              onClick={() => setRightPanelTab('community')}
+            >
               <Users className="w-5 h-5" />
               <span className="text-xs">Observe</span>
             </Button>
@@ -318,16 +427,27 @@ export default function Home() {
       <footer className="bg-gray-900 text-white py-3 px-4 mt-auto hidden lg:block">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
           <div className="flex items-center gap-2">
-            <Bus className="w-4 h-4 text-emerald-400" />
+            <BusIcon className="w-4 h-4 text-emerald-400" />
             <span>ASTC Live Connect</span>
             <span className="text-gray-500">|</span>
             <span className="text-gray-400 text-xs">Community-Powered Transport Sync</span>
           </div>
           <div className="flex items-center gap-4 text-xs text-gray-400">
-            <span>Last updated: {lastUpdate.toLocaleTimeString()}</span>
+            <span>
+              Last updated: {socketLastUpdate?.toLocaleTimeString() || lastUpdate.toLocaleTimeString()}
+            </span>
             <span className="flex items-center gap-1">
-              <Wifi className="w-3 h-3" />
-              Real-time
+              {isSocketConnected ? (
+                <>
+                  <Wifi className="w-3 h-3 text-green-400" />
+                  <span className="text-green-400">Real-time</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3" />
+                  <span>Offline Mode</span>
+                </>
+              )}
             </span>
           </div>
         </div>

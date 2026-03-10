@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/cli/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,138 +7,98 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Bus Routes in Guwahati
-model BusRoute {
-  id          String     @id @default(cuid())
-  routeNumber String     @unique // e.g., "1A", "2B", "3C"
-  routeName   String     // e.g., "Adabari to Paltan Bazaar"
-  startPoint  String
-  endPoint    String
-  distance    Float      // in kilometers
-  baseFare    Float      // base fare in INR
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  
-  stops       BusStop[]
-  buses       Bus[]
+model Bus {
+  id              String            @id
+  busNumber       String            @unique
+  busType         String            @default("STANDARD")
+  capacity        Int               @default(50)
+  routeId         String?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime
+  BusRoute        BusRoute?         @relation(fields: [routeId], references: [id])
+  CommunityReport CommunityReport[]
+  LiveBusLocation LiveBusLocation[]
 }
 
-// Bus Stops along routes
+model BusRoute {
+  id          String    @id
+  routeNumber String    @unique
+  routeName   String
+  startPoint  String
+  endPoint    String
+  distance    Float
+  baseFare    Float
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime
+  Bus         Bus[]
+  BusStop     BusStop[]
+}
+
 model BusStop {
-  id          String     @id @default(cuid())
-  name        String     // e.g., "Adabari Bus Stand", "Maligaon Flyover"
-  landmark    String?    // Nearby landmark
-  latitude    Float
-  longitude   Float
-  sequence    Int        // Order in route
-  isMajor     Boolean    @default(false) // Major stop for transfers
-  routeId     String
-  route       BusRoute   @relation(fields: [routeId], references: [id], onDelete: Cascade)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  
+  id        String   @id
+  name      String
+  landmark  String?
+  latitude  Float
+  longitude Float
+  sequence  Int
+  isMajor   Boolean  @default(false)
+  routeId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  BusRoute  BusRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
   @@unique([routeId, sequence])
 }
 
-// Individual Buses
-model Bus {
-  id            String          @id @default(cuid())
-  busNumber     String          @unique // e.g., "AS-1234"
-  busType       BusType         @default(STANDARD) // Standard, AC, Electric
-  capacity      Int             @default(50)
-  routeId       String?
-  route         BusRoute?       @relation(fields: [routeId], references: [id])
-  isActive      Boolean         @default(true)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  
-  locations     LiveBusLocation[]
-  reports       CommunityReport[]
-}
-
-// Real-time bus location tracking
-model LiveBusLocation {
-  id              String    @id @default(cuid())
-  busId           String
-  bus             Bus       @relation(fields: [busId], references: [id], onDelete: Cascade)
-  latitude        Float
-  longitude       Float
-  speed           Float     // km/h
-  heading         Float     // direction in degrees
-  nextStopId      String?
-  stopsAway       Int       @default(0)
-  currentStatus   BusStatus @default(IN_TRANSIT)
-  lastUpdated     DateTime  @default(now())
-  
-  @@index([busId])
-}
-
-// Traffic congestion zones
-model TrafficZone {
-  id            String          @id @default(cuid())
-  name          String          // e.g., "Maligaon Flyover Construction Zone"
-  description   String?
-  latitude      Float
-  longitude     Float
-  radiusMeters  Int             @default(500)
-  severity      TrafficSeverity @default(MODERATE)
-  isActive      Boolean         @default(true)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  
-  reports       CommunityReport[]
-}
-
-// Community Observer Reports
 model CommunityReport {
-  id            String          @id @default(cuid())
+  id            String       @id
   busId         String?
-  bus           Bus?            @relation(fields: [busId], references: [id])
-  reportType    ReportType
+  reportType    String
   title         String
   description   String
   latitude      Float
   longitude     Float
   trafficZoneId String?
-  trafficZone   TrafficZone?   @relation(fields: [trafficZoneId], references: [id])
-  delayMinutes  Int             @default(0)
-  isVerified    Boolean         @default(false)
-  helpfulCount  Int             @default(0)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  
-  @@index([createdAt])
+  delayMinutes  Int          @default(0)
+  isVerified    Boolean      @default(false)
+  helpfulCount  Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime
+  TrafficZone   TrafficZone? @relation(fields: [trafficZoneId], references: [id])
+  Bus           Bus?         @relation(fields: [busId], references: [id])
+
   @@index([reportType])
+  @@index([createdAt])
 }
 
-enum BusType {
-  STANDARD
-  AC
-  ELECTRIC
-  MINI
+model LiveBusLocation {
+  id            String   @id
+  busId         String
+  latitude      Float
+  longitude     Float
+  speed         Float
+  heading       Float
+  nextStopId    String?
+  stopsAway     Int      @default(0)
+  currentStatus String   @default("IN_TRANSIT")
+  lastUpdated   DateTime @default(now())
+  Bus           Bus      @relation(fields: [busId], references: [id], onDelete: Cascade)
+
+  @@index([busId])
 }
 
-enum BusStatus {
-  AT_STOP
-  IN_TRANSIT
-  DELAYED
-  OUT_OF_SERVICE
-}
-
-enum TrafficSeverity {
-  LOW
-  MODERATE
-  HIGH
-  SEVERE
-}
-
-enum ReportType {
-  DELAY
-  BREAKDOWN
-  ACCIDENT
-  TRAFFIC_JAM
-  ROAD_BLOCK
-  WEATHER
-  OTHER
+model TrafficZone {
+  id              String            @id
+  name            String
+  description     String?
+  latitude        Float
+  longitude       Float
+  radiusMeters    Int               @default(500)
+  severity        String            @default("MODERATE")
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime
+  CommunityReport CommunityReport[]
 }

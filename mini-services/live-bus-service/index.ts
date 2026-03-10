@@ -2,85 +2,211 @@ import { Server } from 'socket.io';
 
 const PORT = 3003;
 
-// Simulated bus data - in production, this would come from ASTC's GPS system
+// Real bus position from database
 interface BusPosition {
   busId: string;
   busNumber: string;
+  busType: string;
   routeId: string;
   routeNumber: string;
+  routeName: string;
   latitude: number;
   longitude: number;
   speed: number;
   heading: number;
   nextStopName: string;
+  nextStopId: string | null;
   stopsAway: number;
   status: 'ON_TIME' | 'DELAYED' | 'ARRIVING';
   timestamp: string;
 }
 
-// Guwahati area coordinates
-const GUWAHATI_CENTER = { lat: 26.1700, lon: 91.7600 };
-const GUWAHATI_RADIUS = 0.08; // degrees
-
-// Sample routes for simulation
-const routes = [
-  { id: 'route-1', number: '1A', stops: ['Adabari', 'Maligaon', 'Jalukbari', 'Panbazar', 'Paltan Bazaar'] },
-  { id: 'route-2', number: '2B', stops: ['Paltan Bazaar', 'Ganeshguri', 'Six Mile', 'Khanapara'] },
-  { id: 'route-3', number: '3C', stops: ['Adabari', 'Jalukbari', 'Paltan Bazaar', 'Ganeshguri', 'Six Mile'] },
-];
-
-// Generate random bus positions
-function generateBusPositions(): BusPosition[] {
-  const buses: BusPosition[] = [];
-  
-  // Generate 2-3 buses per route
-  routes.forEach((route, routeIndex) => {
-    const numBuses = 2 + Math.floor(Math.random() * 2);
-    
-    for (let i = 0; i < numBuses; i++) {
-      const busId = `bus-${routeIndex}-${i}`;
-      const progress = Math.random();
-      const currentStopIndex = Math.floor(progress * (route.stops.length - 1));
-      
-      buses.push({
-        busId,
-        busNumber: `AS-${1001 + routeIndex * 100 + i}`,
-        routeId: route.id,
-        routeNumber: route.number,
-        latitude: GUWAHATI_CENTER.lat + (Math.random() - 0.5) * GUWAHATI_RADIUS * 2,
-        longitude: GUWAHATI_CENTER.lon + (Math.random() - 0.5) * GUWAHATI_RADIUS * 2,
-        speed: Math.floor(Math.random() * 35) + 5, // 5-40 km/h
-        heading: Math.floor(Math.random() * 360),
-        nextStopName: route.stops[currentStopIndex + 1] || route.stops[route.stops.length - 1],
-        stopsAway: Math.floor(Math.random() * 4) + 1,
-        status: Math.random() > 0.7 ? 'DELAYED' : 'ON_TIME',
-        timestamp: new Date().toISOString(),
-      });
-    }
-  });
-  
-  return buses;
+interface TrafficAlert {
+  zoneId: string;
+  zone: string;
+  severity: 'LOW' | 'MODERATE' | 'HIGH' | 'SEVERE';
+  delay: number;
+  message: string;
+  timestamp: string;
 }
 
-// Simulate bus movement
-function updateBusPosition(bus: BusPosition): BusPosition {
-  // Small random movement
-  const latDelta = (Math.random() - 0.5) * 0.002;
-  const lonDelta = (Math.random() - 0.5) * 0.002;
-  
-  return {
-    ...bus,
-    latitude: Math.max(GUWAHATI_CENTER.lat - GUWAHATI_RADIUS, 
-                       Math.min(GUWAHATI_CENTER.lat + GUWAHATI_RADIUS, 
-                                bus.latitude + latDelta)),
-    longitude: Math.max(GUWAHATI_CENTER.lon - GUWAHATI_RADIUS, 
-                        Math.min(GUWAHATI_CENTER.lon + GUWAHATI_RADIUS, 
-                                 bus.longitude + lonDelta)),
-    speed: Math.max(0, Math.min(60, bus.speed + (Math.random() - 0.5) * 10)),
-    heading: (bus.heading + (Math.random() - 0.5) * 20 + 360) % 360,
-    stopsAway: Math.max(0, bus.stopsAway - (Math.random() > 0.9 ? 1 : 0)),
+interface RouteData {
+  id: string;
+  routeNumber: string;
+  routeName: string;
+  stops: { id: string; name: string; latitude: number; longitude: number; sequence: number }[];
+}
+
+interface BusData {
+  id: string;
+  busNumber: string;
+  busType: string;
+  routeId: string | null;
+  route: RouteData | null;
+}
+
+// Cache for route and bus data
+let routesCache: RouteData[] = [];
+let busesCache: BusData[] = [];
+let lastCacheUpdate = 0;
+const CACHE_TTL = 60000; // 1 minute
+
+// Fetch data from main app API
+async function fetchRoutesAndBuses() {
+  const now = Date.now();
+  if (now - lastCacheUpdate < CACHE_TTL && routesCache.length > 0) {
+    return { routes: routesCache, buses: busesCache };
+  }
+
+  try {
+    // Fetch from main app API
+    const [routesRes, busesRes] = await Promise.all([
+      fetch('http://localhost:3000/api/routes'),
+      fetch('http://localhost:3000/api/buses')
+    ]);
+
+    const routesData = await routesRes.json();
+    const busesData = await busesRes.json();
+
+    if (routesData.success && busesData.success) {
+      routesCache = routesData.data.map((r: any) => ({
+        id: r.id,
+        routeNumber: r.routeNumber,
+        routeName: r.routeName,
+        stops: r.stops || []
+      }));
+      
+      busesCache = busesData.data.map((b: any) => ({
+        id: b.id,
+        busNumber: b.busNumber,
+        busType: b.busType,
+        routeId: b.routeId,
+        route: b.route ? {
+          id: b.route.id,
+          routeNumber: b.route.routeNumber,
+          routeName: b.route.routeName,
+          stops: b.route.stops || []
+        } : null
+      }));
+      
+      lastCacheUpdate = now;
+    }
+  } catch (error) {
+    console.error('Error fetching data from main app:', error);
+  }
+
+  return { routes: routesCache, buses: busesCache };
+}
+
+// Store current bus positions for simulation
+let currentPositions: Map<string, {
+  progress: number;
+  direction: 1 | -1;
+  speed: number;
+  heading: number;
+}> = new Map();
+
+// Generate simulated bus positions based on real route data
+async function generateBusPositions(): Promise<BusPosition[]> {
+  const { buses } = await fetchRoutesAndBuses();
+  const positions: BusPosition[] = [];
+
+  for (const bus of buses) {
+    if (!bus.route || !bus.route.stops || bus.route.stops.length < 2) continue;
+
+    const routeStops = bus.route.stops;
+    
+    // Initialize position tracking if not exists
+    if (!currentPositions.has(bus.id)) {
+      currentPositions.set(bus.id, {
+        progress: Math.random(),
+        direction: Math.random() > 0.5 ? 1 : -1,
+        speed: 15 + Math.random() * 20, // 15-35 km/h
+        heading: Math.random() * 360,
+      });
+    }
+
+    const pos = currentPositions.get(bus.id)!;
+    
+    // Update progress along route
+    pos.progress += (pos.direction * 0.02); // Move 2% each update
+    if (pos.progress >= 1) {
+      pos.progress = 0.99;
+      pos.direction = -1;
+    } else if (pos.progress <= 0) {
+      pos.progress = 0.01;
+      pos.direction = 1;
+    }
+
+    // Calculate current position based on route stops
+    const totalStops = routeStops.length;
+    const currentStopIndex = Math.floor(pos.progress * (totalStops - 1));
+    const nextStopIndex = Math.min(currentStopIndex + 1, totalStops - 1);
+    
+    const currentStop = routeStops[currentStopIndex];
+    const nextStop = routeStops[nextStopIndex];
+    
+    // Interpolate position between stops
+    const segmentProgress = (pos.progress * (totalStops - 1)) % 1;
+    const latitude = currentStop.latitude + (nextStop.latitude - currentStop.latitude) * segmentProgress;
+    const longitude = currentStop.longitude + (nextStop.longitude - currentStop.longitude) * segmentProgress;
+    
+    // Calculate heading based on direction
+    const latDiff = nextStop.latitude - currentStop.latitude;
+    const lonDiff = nextStop.longitude - currentStop.longitude;
+    pos.heading = (Math.atan2(latDiff, lonDiff) * 180 / Math.PI + 360) % 360;
+    
+    // Random speed variation
+    pos.speed = Math.max(5, Math.min(50, pos.speed + (Math.random() - 0.5) * 5));
+
+    // Determine status based on random factor
+    const statusRandom = Math.random();
+    let status: 'ON_TIME' | 'DELAYED' | 'ARRIVING' = 'ON_TIME';
+    if (statusRandom > 0.85) {
+      status = 'DELAYED';
+    } else if (pos.progress > 0.95 || nextStopIndex === totalStops - 1) {
+      status = 'ARRIVING';
+    }
+
+    positions.push({
+      busId: bus.id,
+      busNumber: bus.busNumber,
+      busType: bus.busType,
+      routeId: bus.route.id,
+      routeNumber: bus.route.routeNumber,
+      routeName: bus.route.routeName,
+      latitude,
+      longitude,
+      speed: Math.round(pos.speed),
+      heading: Math.round(pos.heading),
+      nextStopName: nextStop.name,
+      nextStopId: nextStop.id,
+      stopsAway: nextStopIndex - currentStopIndex,
+      status,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return positions;
+}
+
+// Generate traffic alerts (simplified - using static data for now)
+async function generateTrafficAlerts(): Promise<TrafficAlert[]> {
+  // These could be fetched from the main app's traffic zones API
+  const staticAlerts = [
+    { zoneId: 'zone-1', zone: 'Maligaon Flyover', severity: 'SEVERE' as const, delay: 25, message: 'Construction causing major delays' },
+    { zoneId: 'zone-2', zone: 'Paltan Bazaar Junction', severity: 'HIGH' as const, delay: 15, message: 'Peak hour congestion' },
+    { zoneId: 'zone-3', zone: 'GS Road - Ganeshguri', severity: 'MODERATE' as const, delay: 8, message: 'Moderate traffic flow' },
+    { zoneId: 'zone-4', zone: 'Fancy Bazaar', severity: 'LOW' as const, delay: 5, message: 'Light traffic' },
+    { zoneId: 'zone-5', zone: 'Ulubari Chariali', severity: 'MODERATE' as const, delay: 10, message: 'Rush hour traffic' },
+  ];
+
+  // Randomly vary delays
+  return staticAlerts.map(alert => ({
+    ...alert,
+    delay: alert.delay + Math.floor(Math.random() * 10) - 5,
     timestamp: new Date().toISOString(),
-  };
+  }));
 }
 
 // Create Socket.IO server
@@ -93,26 +219,40 @@ const io = new Server(PORT, {
 
 console.log(`🚌 ASTC Live Bus Service running on port ${PORT}`);
 
-// Store current bus positions
-let currentPositions = generateBusPositions();
-
 // Handle connections
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log(`Client connected: ${socket.id}`);
   
-  // Send initial data
-  socket.emit('bus-positions', currentPositions);
+  try {
+    // Send initial bus positions
+    const initialPositions = await generateBusPositions();
+    socket.emit('bus-positions', initialPositions);
+    
+    // Send initial traffic alerts
+    const initialAlerts = await generateTrafficAlerts();
+    socket.emit('traffic-alerts', initialAlerts);
+  } catch (error) {
+    console.error('Error sending initial data:', error);
+  }
   
   // Handle route subscription
-  socket.on('subscribe-route', (routeId: string) => {
+  socket.on('subscribe-route', async (routeId: string) => {
     socket.join(`route:${routeId}`);
-    const routeBuses = currentPositions.filter(b => b.routeId === routeId);
-    socket.emit('bus-positions', routeBuses);
+    console.log(`Client ${socket.id} subscribed to route ${routeId}`);
+    
+    try {
+      const positions = await generateBusPositions();
+      const routeBuses = positions.filter(b => b.routeId === routeId);
+      socket.emit('bus-positions', routeBuses);
+    } catch (error) {
+      console.error('Error sending route buses:', error);
+    }
   });
   
   // Handle route unsubscription
   socket.on('unsubscribe-route', (routeId: string) => {
     socket.leave(`route:${routeId}`);
+    console.log(`Client ${socket.id} unsubscribed from route ${routeId}`);
   });
   
   // Handle disconnect
@@ -121,36 +261,49 @@ io.on('connection', (socket) => {
   });
 });
 
-// Update positions every 5 seconds
-setInterval(() => {
-  currentPositions = currentPositions.map(updateBusPosition);
-  
-  // Broadcast to all clients
-  io.emit('bus-positions', currentPositions);
-  
-  // Broadcast to route-specific rooms
-  routes.forEach(route => {
-    const routeBuses = currentPositions.filter(b => b.routeId === route.id);
-    io.to(`route:${route.id}`).emit('bus-positions', routeBuses);
-  });
+// Update and broadcast positions every 5 seconds
+setInterval(async () => {
+  try {
+    const positions = await generateBusPositions();
+    
+    // Broadcast to all clients
+    io.emit('bus-positions', positions);
+    
+    // Broadcast to route-specific rooms
+    const routeIds = [...new Set(positions.map(p => p.routeId))];
+    for (const routeId of routeIds) {
+      const routeBuses = positions.filter(b => b.routeId === routeId);
+      io.to(`route:${routeId}`).emit('bus-positions', routeBuses);
+    }
+  } catch (error) {
+    console.error('Error updating positions:', error);
+  }
 }, 5000);
 
-// Traffic alerts simulation
-const trafficAlerts = [
-  { zone: 'Maligaon Flyover', severity: 'SEVERE', delay: 25, message: 'Construction causing major delays' },
-  { zone: 'Paltan Bazaar Junction', severity: 'HIGH', delay: 15, message: 'Peak hour congestion' },
-  { zone: 'GS Road - Ganeshguri', severity: 'MODERATE', delay: 8, message: 'Moderate traffic flow' },
-];
-
 // Broadcast traffic alerts every 30 seconds
-setInterval(() => {
-  // Randomly update one alert
-  const randomAlert = trafficAlerts[Math.floor(Math.random() * trafficAlerts.length)];
-  randomAlert.delay = Math.floor(Math.random() * 20) + 5;
-  randomAlert.severity = randomAlert.delay > 20 ? 'SEVERE' : randomAlert.delay > 10 ? 'HIGH' : 'MODERATE';
-  
-  io.emit('traffic-alert', {
-    ...randomAlert,
-    timestamp: new Date().toISOString(),
-  });
+setInterval(async () => {
+  try {
+    const alerts = await generateTrafficAlerts();
+    io.emit('traffic-alerts', alerts);
+    
+    // Also emit individual alerts
+    for (const alert of alerts) {
+      io.emit('traffic-alert', alert);
+    }
+  } catch (error) {
+    console.error('Error updating traffic alerts:', error);
+  }
 }, 30000);
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('Shutting down...');
+  io.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('Shutting down...');
+  io.close();
+  process.exit(0);
+});
