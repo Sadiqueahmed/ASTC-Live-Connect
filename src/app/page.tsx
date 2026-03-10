@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { BusRoute, Bus, TrafficZone, CommunityReport, LiveBusLocation } from '@/components/astc/types';
+import { BusRoute, Bus, TrafficZone, CommunityReport } from '@/components/astc/types';
 import { RouteSelector } from '@/components/astc/route-selector';
 import { StopETAPanel } from '@/components/astc/stop-eta-panel';
 import { CommunityObserver } from '@/components/astc/community-observer';
@@ -25,28 +25,39 @@ import {
   ChevronRight,
   Route,
   Heart,
-  Navigation,
+  Crosshair,
   WifiOff,
-  Crosshair
+  Sparkles,
+  Zap
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSocket, convertToLiveLocation } from '@/hooks/use-socket';
 
-// Dynamically import BusMap with SSR disabled (Leaflet requires window)
+// Dynamically import BusMap with SSR disabled
 const BusMap = dynamic(
   () => import('@/components/astc/bus-map').then((mod) => mod.BusMap),
   { 
     ssr: false,
-    loading: () => (
-      <div className="w-full h-full bg-gradient-to-br from-emerald-50 to-teal-100 rounded-xl flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-emerald-700 font-medium">Loading map...</p>
-        </div>
-      </div>
-    ),
+    loading: () => <MapLoadingState />
   }
 );
+
+function MapLoadingState() {
+  return (
+    <div className="w-full h-full bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 rounded-2xl flex items-center justify-center">
+      <div className="text-center">
+        <div className="relative w-20 h-20 mx-auto mb-4">
+          <div className="absolute inset-0 bg-emerald-200 rounded-full animate-ping opacity-30" />
+          <div className="relative w-20 h-20 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-full flex items-center justify-center shadow-lg">
+            <BusIcon className="w-10 h-10 text-white" />
+          </div>
+        </div>
+        <p className="text-emerald-700 font-semibold text-lg">Loading Map</p>
+        <p className="text-emerald-600/60 text-sm mt-1">Preparing live tracking...</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const [routes, setRoutes] = useState<BusRoute[]>([]);
@@ -61,67 +72,42 @@ export default function Home() {
   const [isRoutePanelOpen, setIsRoutePanelOpen] = useState(true);
   const [rightPanelTab, setRightPanelTab] = useState('eta');
 
-  // WebSocket connection for real-time updates
   const { 
     isConnected: isSocketConnected, 
     busPositions, 
-    trafficAlerts,
     subscribeToRoute,
     unsubscribeFromRoute,
     lastUpdate: socketLastUpdate 
   } = useSocket();
 
-  // Merge real-time bus positions with base bus data
   const liveBuses = useMemo(() => {
-    if (!isSocketConnected || busPositions.length === 0) {
-      return buses;
-    }
-
+    if (!isSocketConnected || busPositions.length === 0) return buses;
     const positionMap = new Map(busPositions.map(p => [p.busId, p]));
-
     return buses.map(bus => {
       const position = positionMap.get(bus.id);
-      if (position) {
-        return {
-          ...bus,
-          isActive: true,
-          liveLocation: convertToLiveLocation(position),
-        };
-      }
-      return bus;
+      return position ? { ...bus, isActive: true, liveLocation: convertToLiveLocation(position) } : bus;
     });
   }, [buses, busPositions, isSocketConnected]);
 
-  // Subscribe to route updates when selected route changes
   useEffect(() => {
     if (selectedRoute && isSocketConnected) {
       subscribeToRoute(selectedRoute.id);
-      return () => {
-        unsubscribeFromRoute(selectedRoute.id);
-      };
+      return () => unsubscribeFromRoute(selectedRoute.id);
     }
   }, [selectedRoute, isSocketConnected, subscribeToRoute, unsubscribeFromRoute]);
 
-  // Fetch all data
   const fetchData = useCallback(async () => {
     try {
       const [routesRes, busesRes, zonesRes, reportsRes] = await Promise.all([
-        fetch('/api/routes'),
-        fetch('/api/buses'),
-        fetch('/api/traffic-zones'),
-        fetch('/api/reports?limit=20'),
+        fetch('/api/routes'), fetch('/api/buses'), fetch('/api/traffic-zones'), fetch('/api/reports?limit=20'),
       ]);
-
-      const routesData = await routesRes.json();
-      const busesData = await busesRes.json();
-      const zonesData = await zonesRes.json();
-      const reportsData = await reportsRes.json();
-
+      const [routesData, busesData, zonesData, reportsData] = await Promise.all([
+        routesRes.json(), busesRes.json(), zonesRes.json(), reportsRes.json()
+      ]);
       if (routesData.success) setRoutes(routesData.data);
       if (busesData.success) setBuses(busesData.data);
       if (zonesData.success) setTrafficZones(zonesData.data);
       if (reportsData.success) setReports(reportsData.data);
-
       setLastUpdate(new Date());
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -130,45 +116,28 @@ export default function Home() {
     }
   }, []);
 
-  // Initial fetch
   useEffect(() => {
     fetchData();
-    // Refresh static data every 2 minutes (real-time comes from WebSocket)
     const interval = setInterval(fetchData, 120000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Handle manual refresh
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await fetchData();
     setTimeout(() => setIsRefreshing(false), 500);
   };
 
-  // Handle report submission
-  const handleReportSubmit = async (report: {
-    busId: string | null;
-    reportType: string;
-    title: string;
-    description: string;
-    latitude: number;
-    longitude: number;
-    delayMinutes: number;
-    trafficZoneId: string | null;
-  }) => {
+  const handleReportSubmit = async (report: object) => {
     const response = await fetch('/api/reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(report),
     });
-    
     const data = await response.json();
-    if (data.success) {
-      setReports((prev) => [data.data, ...prev].slice(0, 20));
-    }
+    if (data.success) setReports((prev) => [data.data, ...prev].slice(0, 20));
   };
 
-  // Calculate stats
   const stats = {
     activeBuses: liveBuses.filter(b => b.isActive).length,
     activeRoutes: routes.filter(r => r.isActive).length,
@@ -177,73 +146,84 @@ export default function Home() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-16 h-16 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-600 font-medium">Loading ASTC Live Connect...</p>
-        </div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-emerald-50/30 to-teal-50/20 flex flex-col">
+      {/* Animated background pattern */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-emerald-200/30 rounded-full blur-3xl" />
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-teal-200/30 rounded-full blur-3xl" />
+      </div>
+
       {/* Header */}
-      <header className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white shadow-lg sticky top-0 z-50">
+      <header className="relative bg-white/80 backdrop-blur-xl border-b border-emerald-100/50 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
+            {/* Logo & Title */}
             <div className="flex items-center gap-3">
-              <div className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-                <BusIcon className="w-6 h-6" />
+              <div className="relative">
+                <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl blur-sm opacity-50" />
+                <div className="relative bg-gradient-to-br from-emerald-500 to-teal-600 p-2.5 rounded-xl shadow-lg">
+                  <BusIcon className="w-6 h-6 text-white" />
+                </div>
               </div>
               <div>
-                <h1 className="text-xl font-bold">ASTC Live Connect</h1>
-                <p className="text-xs text-white/80">Smart Public Transport Sync for Guwahati</p>
+                <h1 className="text-xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                  ASTC Live Connect
+                </h1>
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-amber-500" />
+                  Smart Transport for Guwahati
+                </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            {/* Stats & Controls */}
+            <div className="flex items-center gap-3">
               {/* Stats badges */}
-              <div className="hidden md:flex items-center gap-3">
-                <Badge className="bg-white/20 hover:bg-white/30 text-white border-0 gap-1">
-                  <BusIcon className="w-3 h-3" />
-                  {stats.activeBuses} Buses
-                </Badge>
-                <Badge className="bg-white/20 hover:bg-white/30 text-white border-0 gap-1">
-                  <MapPin className="w-3 h-3" />
-                  {stats.activeRoutes} Routes
-                </Badge>
+              <div className="hidden md:flex items-center gap-2">
+                <StatBadge icon={BusIcon} value={stats.activeBuses} label="Buses" color="emerald" />
+                <StatBadge icon={MapPin} value={stats.activeRoutes} label="Routes" color="teal" />
                 {stats.severeZones > 0 && (
-                  <Badge className="bg-red-500 hover:bg-red-600 text-white border-0 gap-1">
-                    <AlertTriangle className="w-3 h-3" />
-                    {stats.severeZones} Hotspots
-                  </Badge>
+                  <StatBadge icon={AlertTriangle} value={stats.severeZones} label="Hotspots" color="red" pulse />
                 )}
               </div>
 
-              {/* Connection status */}
+              {/* Divider */}
+              <div className="hidden md:block w-px h-8 bg-slate-200" />
+
+              {/* Refresh & Status */}
               <div className="flex items-center gap-2">
-                <button
+                <Button
                   onClick={handleRefresh}
                   disabled={isRefreshing}
-                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 rounded-xl hover:bg-emerald-50"
                 >
-                  <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
-                </button>
+                  <RefreshCw className={cn("w-4 h-4 text-slate-600", isRefreshing && "animate-spin")} />
+                </Button>
+                
                 <div className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-full",
-                  isSocketConnected ? "bg-white/10" : "bg-red-500/30"
+                  "flex items-center gap-2 px-3 py-1.5 rounded-xl transition-all duration-300",
+                  isSocketConnected 
+                    ? "bg-emerald-50 border border-emerald-200" 
+                    : "bg-red-50 border border-red-200"
                 )}>
                   {isSocketConnected ? (
                     <>
-                      <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                      <span className="text-xs font-medium">LIVE</span>
+                      <div className="relative">
+                        <div className="w-2 h-2 bg-emerald-500 rounded-full" />
+                        <div className="absolute inset-0 w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+                      </div>
+                      <span className="text-xs font-semibold text-emerald-700">LIVE</span>
                     </>
                   ) : (
                     <>
-                      <WifiOff className="w-3 h-3" />
-                      <span className="text-xs font-medium">Offline</span>
+                      <WifiOff className="w-3.5 h-3.5 text-red-500" />
+                      <span className="text-xs font-semibold text-red-600">Offline</span>
                     </>
                   )}
                 </div>
@@ -254,17 +234,15 @@ export default function Home() {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-4">
+      <main className="relative flex-1 max-w-7xl mx-auto w-full px-4 py-4">
         <div className="flex gap-4 h-[calc(100vh-140px)]">
-          {/* Collapsible Route Panel */}
-          <div 
-            className={cn(
-              "transition-all duration-300 ease-in-out flex-shrink-0",
-              isRoutePanelOpen ? "w-80" : "w-12"
-            )}
-          >
+          {/* Route Panel */}
+          <div className={cn(
+            "transition-all duration-300 ease-in-out flex-shrink-0",
+            isRoutePanelOpen ? "w-80" : "w-12"
+          )}>
             {isRoutePanelOpen ? (
-              <div className="h-full relative">
+              <div className="h-full relative animate-fade-in">
                 <RouteSelector
                   routes={routes}
                   selectedRoute={selectedRoute}
@@ -273,25 +251,25 @@ export default function Home() {
                     setSelectedStop(null);
                   }}
                 />
-                {/* Collapse button */}
                 <Button
                   variant="secondary"
                   size="icon"
-                  className="absolute top-3 right-3 z-10 h-7 w-7"
+                  className="absolute top-3 right-3 z-10 h-8 w-8 rounded-lg bg-white/80 backdrop-blur-sm border border-slate-200 shadow-sm hover:bg-slate-50"
                   onClick={() => setIsRoutePanelOpen(false)}
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-4 h-4 text-slate-600" />
                 </Button>
               </div>
             ) : (
-              /* Collapsed state - vertical button */
-              <div className="h-full flex flex-col items-center">
+              <div className="h-full flex flex-col items-center animate-scale-in">
                 <Button
                   variant="outline"
-                  className="h-full w-full flex flex-col items-center justify-center gap-2 py-4 bg-white shadow-sm hover:bg-emerald-50 border-emerald-200"
+                  className="h-full w-full flex flex-col items-center justify-center gap-2 py-4 bg-white/80 backdrop-blur-sm shadow-sm hover:bg-emerald-50 border-emerald-200 rounded-2xl"
                   onClick={() => setIsRoutePanelOpen(true)}
                 >
-                  <Route className="w-5 h-5 text-emerald-600" />
+                  <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg">
+                    <Route className="w-5 h-5 text-white" />
+                  </div>
                   <span className="text-xs font-medium text-emerald-700 writing-mode-vertical">
                     Routes
                   </span>
@@ -301,9 +279,9 @@ export default function Home() {
             )}
           </div>
 
-          {/* Center - Map */}
-          <div className="flex-1 min-w-0">
-            <Card className="h-full overflow-hidden">
+          {/* Map */}
+          <div className="flex-1 min-w-0 animate-scale-in">
+            <Card className="h-full overflow-hidden border-0 shadow-xl rounded-2xl">
               <CardContent className="p-0 h-full">
                 <BusMap
                   route={selectedRoute}
@@ -316,142 +294,170 @@ export default function Home() {
             </Card>
           </div>
 
-          {/* Right panel - ETA, Favorites, Nearest Stops, Community */}
-          <div className="w-80 flex-shrink-0 hidden lg:flex flex-col gap-4">
+          {/* Right Panel */}
+          <div className="w-80 flex-shrink-0 hidden lg:flex flex-col gap-4 animate-fade-in">
             <Tabs value={rightPanelTab} onValueChange={setRightPanelTab} className="flex-1 flex flex-col">
-              <TabsList className="grid grid-cols-4 w-full">
-                <TabsTrigger value="eta" className="text-xs px-2">
-                  <Clock className="w-3 h-3" />
+              <TabsList className="grid grid-cols-4 w-full bg-white/80 backdrop-blur-sm border border-slate-200 rounded-xl p-1 h-auto">
+                <TabsTrigger value="eta" className="rounded-lg data-[state=active]:bg-gradient-to-br data-[state=active]:from-emerald-500 data-[state=active]:to-teal-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+                  <Clock className="w-4 h-4" />
                 </TabsTrigger>
-                <TabsTrigger value="nearest" className="text-xs px-2">
-                  <Crosshair className="w-3 h-3" />
+                <TabsTrigger value="nearest" className="rounded-lg data-[state=active]:bg-gradient-to-br data-[state=active]:from-emerald-500 data-[state=active]:to-teal-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+                  <Crosshair className="w-4 h-4" />
                 </TabsTrigger>
-                <TabsTrigger value="favorites" className="text-xs px-2">
-                  <Heart className="w-3 h-3" />
+                <TabsTrigger value="favorites" className="rounded-lg data-[state=active]:bg-gradient-to-br data-[state=active]:from-emerald-500 data-[state=active]:to-teal-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+                  <Heart className="w-4 h-4" />
                 </TabsTrigger>
-                <TabsTrigger value="community" className="text-xs px-2">
-                  <Users className="w-3 h-3" />
+                <TabsTrigger value="community" className="rounded-lg data-[state=active]:bg-gradient-to-br data-[state=active]:from-emerald-500 data-[state=active]:to-teal-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+                  <Users className="w-4 h-4" />
                 </TabsTrigger>
               </TabsList>
-              <TabsContent value="eta" className="flex-1 mt-2">
-                <StopETAPanel
-                  route={selectedRoute}
-                  selectedStopId={selectedStop}
-                />
-              </TabsContent>
-              <TabsContent value="nearest" className="flex-1 mt-2">
-                <NearestStopsPanel
-                  routes={routes}
-                  onRouteSelect={(route) => {
-                    setSelectedRoute(route);
-                    setSelectedStop(null);
-                  }}
-                  onStopSelect={setSelectedStop}
-                />
-              </TabsContent>
-              <TabsContent value="favorites" className="flex-1 mt-2">
-                <FavoritesPanel
-                  routes={routes}
-                  onRouteSelect={(route) => {
-                    setSelectedRoute(route);
-                    setSelectedStop(null);
-                  }}
-                  onStopSelect={setSelectedStop}
-                />
-              </TabsContent>
-              <TabsContent value="community" className="flex-1 mt-2">
-                <CommunityObserver
-                  reports={reports}
-                  routes={routes}
-                  trafficZones={trafficZones}
-                  onReportSubmit={handleReportSubmit}
-                />
-              </TabsContent>
+              
+              {[
+                { value: 'eta', component: <StopETAPanel route={selectedRoute} selectedStopId={selectedStop} /> },
+                { value: 'nearest', component: <NearestStopsPanel routes={routes} onRouteSelect={(r) => { setSelectedRoute(r); setSelectedStop(null); }} onStopSelect={setSelectedStop} /> },
+                { value: 'favorites', component: <FavoritesPanel routes={routes} onRouteSelect={(r) => { setSelectedRoute(r); setSelectedStop(null); }} onStopSelect={setSelectedStop} /> },
+                { value: 'community', component: <CommunityObserver reports={reports} routes={routes} trafficZones={trafficZones} onReportSubmit={handleReportSubmit} /> },
+              ].map(({ value, component }) => (
+                <TabsContent key={value} value={value} className="flex-1 mt-3">
+                  {component}
+                </TabsContent>
+              ))}
             </Tabs>
 
-            {/* Traffic zones mini panel */}
             <div className="flex-shrink-0" style={{ maxHeight: '200px' }}>
               <TrafficZonesPanel zones={trafficZones} />
             </div>
           </div>
         </div>
 
-        {/* Mobile bottom navigation */}
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg z-40">
-          <div className="flex items-center justify-around py-2">
-            <Button
-              variant={selectedRoute ? "ghost" : "default"}
-              className="flex flex-col items-center gap-1 h-auto py-2"
-              onClick={() => setIsRoutePanelOpen(!isRoutePanelOpen)}
-            >
-              <Route className="w-5 h-5" />
-              <span className="text-xs">Routes</span>
-            </Button>
-            <Button 
-              variant="ghost" 
-              className="flex flex-col items-center gap-1 h-auto py-2"
-              onClick={() => setRightPanelTab('nearest')}
-            >
-              <Crosshair className="w-5 h-5" />
-              <span className="text-xs">Nearby</span>
-            </Button>
-            <Button 
-              variant="ghost" 
-              className="flex flex-col items-center gap-1 h-auto py-2"
-              onClick={() => setRightPanelTab('eta')}
-            >
-              <Clock className="w-5 h-5" />
-              <span className="text-xs">ETA</span>
-            </Button>
-            <Button 
-              variant="ghost" 
-              className="flex flex-col items-center gap-1 h-auto py-2"
-              onClick={() => setRightPanelTab('favorites')}
-            >
-              <Heart className="w-5 h-5" />
-              <span className="text-xs">Saved</span>
-            </Button>
-            <Button 
-              variant="ghost" 
-              className="flex flex-col items-center gap-1 h-auto py-2"
-              onClick={() => setRightPanelTab('community')}
-            >
-              <Users className="w-5 h-5" />
-              <span className="text-xs">Observe</span>
-            </Button>
-          </div>
-        </div>
+        {/* Mobile Navigation */}
+        <MobileNav 
+          selectedRoute={selectedRoute}
+          activeTab={rightPanelTab}
+          onToggleRoutes={() => setIsRoutePanelOpen(!isRoutePanelOpen)}
+          onTabChange={setRightPanelTab}
+        />
       </main>
 
       {/* Footer */}
-      <footer className="bg-gray-900 text-white py-3 px-4 mt-auto hidden lg:block">
+      <footer className="relative bg-slate-900 text-white py-3 px-4 mt-auto hidden lg:block">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2">
-            <BusIcon className="w-4 h-4 text-emerald-400" />
-            <span>ASTC Live Connect</span>
-            <span className="text-gray-500">|</span>
-            <span className="text-gray-400 text-xs">Community-Powered Transport Sync</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <div className="bg-gradient-to-br from-emerald-500 to-teal-600 p-1.5 rounded-lg">
+                <BusIcon className="w-4 h-4 text-white" />
+              </div>
+              <span className="font-semibold">ASTC Live Connect</span>
+            </div>
+            <span className="text-slate-600">•</span>
+            <span className="text-slate-400 text-xs">Community-Powered Transport Sync</span>
           </div>
-          <div className="flex items-center gap-4 text-xs text-gray-400">
-            <span>
-              Last updated: {socketLastUpdate?.toLocaleTimeString() || lastUpdate.toLocaleTimeString()}
+          <div className="flex items-center gap-4 text-xs text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5" />
+              Updated: {socketLastUpdate?.toLocaleTimeString() || lastUpdate.toLocaleTimeString()}
             </span>
-            <span className="flex items-center gap-1">
-              {isSocketConnected ? (
-                <>
-                  <Wifi className="w-3 h-3 text-green-400" />
-                  <span className="text-green-400">Real-time</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-3 h-3" />
-                  <span>Offline Mode</span>
-                </>
-              )}
+            <span className={cn(
+              "flex items-center gap-1.5 px-2 py-1 rounded-full",
+              isSocketConnected ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"
+            )}>
+              {isSocketConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              {isSocketConnected ? 'Real-time' : 'Offline'}
             </span>
           </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// Stat Badge Component
+function StatBadge({ icon: Icon, value, label, color, pulse }: { 
+  icon: React.ElementType; 
+  value: number; 
+  label: string;
+  color: 'emerald' | 'teal' | 'red';
+  pulse?: boolean;
+}) {
+  const colors = {
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    teal: 'bg-teal-50 text-teal-700 border-teal-200',
+    red: 'bg-red-50 text-red-700 border-red-200',
+  };
+  
+  return (
+    <div className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-xl border", colors[color])}>
+      <Icon className={cn("w-3.5 h-3.5", pulse && "animate-pulse")} />
+      <span className="font-bold text-sm">{value}</span>
+      <span className="text-xs opacity-70">{label}</span>
+    </div>
+  );
+}
+
+// Loading Screen
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-emerald-50/30 to-teal-50/20 flex items-center justify-center">
+      <div className="text-center animate-fade-in">
+        <div className="relative w-24 h-24 mx-auto mb-6">
+          <div className="absolute inset-0 bg-emerald-200 rounded-2xl animate-ping opacity-30" />
+          <div className="absolute inset-0 bg-emerald-100 rounded-2xl animate-pulse" />
+          <div className="relative w-24 h-24 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center shadow-2xl">
+            <BusIcon className="w-12 h-12 text-white animate-float" />
+          </div>
+        </div>
+        <h2 className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent mb-2">
+          ASTC Live Connect
+        </h2>
+        <p className="text-slate-500">Loading smart transport sync...</p>
+        <div className="flex items-center justify-center gap-1 mt-4">
+          {[0, 1, 2].map((i) => (
+            <div 
+              key={i} 
+              className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce"
+              style={{ animationDelay: `${i * 0.1}s` }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mobile Navigation
+function MobileNav({ selectedRoute, activeTab, onToggleRoutes, onTabChange }: {
+  selectedRoute: BusRoute | null;
+  activeTab: string;
+  onToggleRoutes: () => void;
+  onTabChange: (tab: string) => void;
+}) {
+  const tabs = [
+    { id: 'routes', icon: Route, label: 'Routes' },
+    { id: 'nearest', icon: Crosshair, label: 'Nearby' },
+    { id: 'eta', icon: Clock, label: 'ETA' },
+    { id: 'favorites', icon: Heart, label: 'Saved' },
+    { id: 'community', icon: Users, label: 'Observe' },
+  ];
+  
+  return (
+    <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200 shadow-lg z-40">
+      <div className="flex items-center justify-around py-2 px-2">
+        {tabs.map(({ id, icon: Icon, label }) => (
+          <button
+            key={id}
+            onClick={() => id === 'routes' ? onToggleRoutes() : onTabChange(id)}
+            className={cn(
+              "flex flex-col items-center gap-0.5 py-2 px-3 rounded-xl transition-all",
+              (id === 'routes' && selectedRoute) || activeTab === id
+                ? "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md"
+                : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            <Icon className="w-5 h-5" />
+            <span className="text-[10px] font-medium">{label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
