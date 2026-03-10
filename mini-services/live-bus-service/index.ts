@@ -1,6 +1,21 @@
 import { Server } from 'socket.io';
+import http from 'http';
 
 const PORT = 3003;
+
+// Create HTTP server first
+const httpServer = http.createServer((req, res) => {
+  // Handle health check
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+    return;
+  }
+  
+  // Let socket.io handle other requests
+  res.writeHead(404);
+  res.end();
+});
 
 // Real bus position from database
 interface BusPosition {
@@ -59,7 +74,6 @@ async function fetchRoutesAndBuses() {
   }
 
   try {
-    // Fetch from main app API
     const [routesRes, busesRes] = await Promise.all([
       fetch('http://localhost:3000/api/routes'),
       fetch('http://localhost:3000/api/buses')
@@ -116,20 +130,18 @@ async function generateBusPositions(): Promise<BusPosition[]> {
 
     const routeStops = bus.route.stops;
     
-    // Initialize position tracking if not exists
     if (!currentPositions.has(bus.id)) {
       currentPositions.set(bus.id, {
         progress: Math.random(),
         direction: Math.random() > 0.5 ? 1 : -1,
-        speed: 15 + Math.random() * 20, // 15-35 km/h
+        speed: 15 + Math.random() * 20,
         heading: Math.random() * 360,
       });
     }
 
     const pos = currentPositions.get(bus.id)!;
     
-    // Update progress along route
-    pos.progress += (pos.direction * 0.02); // Move 2% each update
+    pos.progress += (pos.direction * 0.02);
     if (pos.progress >= 1) {
       pos.progress = 0.99;
       pos.direction = -1;
@@ -138,7 +150,6 @@ async function generateBusPositions(): Promise<BusPosition[]> {
       pos.direction = 1;
     }
 
-    // Calculate current position based on route stops
     const totalStops = routeStops.length;
     const currentStopIndex = Math.floor(pos.progress * (totalStops - 1));
     const nextStopIndex = Math.min(currentStopIndex + 1, totalStops - 1);
@@ -146,20 +157,16 @@ async function generateBusPositions(): Promise<BusPosition[]> {
     const currentStop = routeStops[currentStopIndex];
     const nextStop = routeStops[nextStopIndex];
     
-    // Interpolate position between stops
     const segmentProgress = (pos.progress * (totalStops - 1)) % 1;
     const latitude = currentStop.latitude + (nextStop.latitude - currentStop.latitude) * segmentProgress;
     const longitude = currentStop.longitude + (nextStop.longitude - currentStop.longitude) * segmentProgress;
     
-    // Calculate heading based on direction
     const latDiff = nextStop.latitude - currentStop.latitude;
     const lonDiff = nextStop.longitude - currentStop.longitude;
     pos.heading = (Math.atan2(latDiff, lonDiff) * 180 / Math.PI + 360) % 360;
     
-    // Random speed variation
     pos.speed = Math.max(5, Math.min(50, pos.speed + (Math.random() - 0.5) * 5));
 
-    // Determine status based on random factor
     const statusRandom = Math.random();
     let status: 'ON_TIME' | 'DELAYED' | 'ARRIVING' = 'ON_TIME';
     if (statusRandom > 0.85) {
@@ -190,9 +197,8 @@ async function generateBusPositions(): Promise<BusPosition[]> {
   return positions;
 }
 
-// Generate traffic alerts (simplified - using static data for now)
+// Generate traffic alerts
 async function generateTrafficAlerts(): Promise<TrafficAlert[]> {
-  // These could be fetched from the main app's traffic zones API
   const staticAlerts = [
     { zoneId: 'zone-1', zone: 'Maligaon Flyover', severity: 'SEVERE' as const, delay: 25, message: 'Construction causing major delays' },
     { zoneId: 'zone-2', zone: 'Paltan Bazaar Junction', severity: 'HIGH' as const, delay: 15, message: 'Peak hour congestion' },
@@ -201,7 +207,6 @@ async function generateTrafficAlerts(): Promise<TrafficAlert[]> {
     { zoneId: 'zone-5', zone: 'Ulubari Chariali', severity: 'MODERATE' as const, delay: 10, message: 'Rush hour traffic' },
   ];
 
-  // Randomly vary delays
   return staticAlerts.map(alert => ({
     ...alert,
     delay: alert.delay + Math.floor(Math.random() * 10) - 5,
@@ -209,67 +214,57 @@ async function generateTrafficAlerts(): Promise<TrafficAlert[]> {
   }));
 }
 
-// Create Socket.IO server
-const io = new Server(PORT, {
+// Create Socket.IO server with proper configuration
+const io = new Server(httpServer, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  path: '/socket.io',
+  serveClient: false,
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
-console.log(`🚌 ASTC Live Bus Service running on port ${PORT}`);
+console.log(`🚌 ASTC Live Bus Service starting on port ${PORT}`);
 
 // Handle connections
 io.on('connection', async (socket) => {
   console.log(`Client connected: ${socket.id}`);
   
   try {
-    // Send initial bus positions
     const initialPositions = await generateBusPositions();
     socket.emit('bus-positions', initialPositions);
-    
-    // Send initial traffic alerts
-    const initialAlerts = await generateTrafficAlerts();
-    socket.emit('traffic-alerts', initialAlerts);
   } catch (error) {
     console.error('Error sending initial data:', error);
   }
   
-  // Handle route subscription
   socket.on('subscribe-route', async (routeId: string) => {
     socket.join(`route:${routeId}`);
     console.log(`Client ${socket.id} subscribed to route ${routeId}`);
-    
-    try {
-      const positions = await generateBusPositions();
-      const routeBuses = positions.filter(b => b.routeId === routeId);
-      socket.emit('bus-positions', routeBuses);
-    } catch (error) {
-      console.error('Error sending route buses:', error);
-    }
   });
   
-  // Handle route unsubscription
   socket.on('unsubscribe-route', (routeId: string) => {
     socket.leave(`route:${routeId}`);
     console.log(`Client ${socket.id} unsubscribed from route ${routeId}`);
   });
   
-  // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
   });
+});
+
+// Start HTTP server
+httpServer.listen(PORT, () => {
+  console.log(`🚌 ASTC Live Bus Service running on port ${PORT}`);
 });
 
 // Update and broadcast positions every 5 seconds
 setInterval(async () => {
   try {
     const positions = await generateBusPositions();
-    
-    // Broadcast to all clients
     io.emit('bus-positions', positions);
     
-    // Broadcast to route-specific rooms
     const routeIds = [...new Set(positions.map(p => p.routeId))];
     for (const routeId of routeIds) {
       const routeBuses = positions.filter(b => b.routeId === routeId);
@@ -285,11 +280,6 @@ setInterval(async () => {
   try {
     const alerts = await generateTrafficAlerts();
     io.emit('traffic-alerts', alerts);
-    
-    // Also emit individual alerts
-    for (const alert of alerts) {
-      io.emit('traffic-alert', alert);
-    }
   } catch (error) {
     console.error('Error updating traffic alerts:', error);
   }
@@ -299,11 +289,13 @@ setInterval(async () => {
 process.on('SIGINT', () => {
   console.log('Shutting down...');
   io.close();
+  httpServer.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('Shutting down...');
   io.close();
+  httpServer.close();
   process.exit(0);
 });
